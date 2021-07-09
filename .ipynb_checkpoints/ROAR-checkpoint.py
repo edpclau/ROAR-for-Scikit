@@ -34,24 +34,40 @@ shap.initjs()
 # y_train: Target values for training (This was build using a binary target)
 # X_test:  Test data as pandas dataframe
 
-def rankings(clf, X_train, y_train, X_test):
+def train(clf, X_train, y_train):
     #Define model
     model = copy.deepcopy(clf)
     
     #Fit model
     model.fit(X_train, y_train)
     
+    return model
+
+
+def explain(clf, X_train, X_test, explainer = 'KernelExplainer'):
     #Build Explanation
-    explainer = shap.KernelExplainer(model.predict_proba, np.mean(X_train))
-    shap_values = explainer.shap_values(X_test)
+    if explainer == 'KernelExplainer':
+        explanation = shap.KernelExplainer(clf.predict_proba, shap.kmeans(X_train, 10))
     
-    #Get Rankings
+    elif explainer == 'TreeExplainer':
+        explanation = shap.TreeExplainer(clf)
+
+    elif explainer == 'LinearExplainer':
+        explanation = shap.LinearExplainer(clf, shap.maskers.Independent(X_train, len(X_train)))
+    
+    #Get SHAP values
+    shap_values = explanation.shap_values(X_test)
+    
     if len(shap_values) == 1:
         values = shap_values
     else: 
         values = shap_values[1]
 
     shap_values_df = pd.DataFrame(values, columns = X_train.columns)
+    
+    return shap_values_df
+
+def rankings(shap_values):
     rankings = shap_values_df.abs().mean().sort_values(ascending = False)
     
     return rankings
@@ -238,8 +254,13 @@ def roar(clf, t, X_train, y_train, X_test, y_test):
     ranks = []
     #Repeat 5 times:
     for i in range(5):
+        #Train
+        model = train(clf, X_train, y_train)
+        #Explain
+        shap_values = explain(model, X_train, X_test, explainer = 'KernelExplainer')
         #Get rankings
-        ranks.append(rankings(clf, X_train, y_train, X_test))
+        ranks.append(rankings(shap_values))
+        
         #Repeat 3 times removing from top, bottom, and randomly
         for k in ["top", "bottom", "random"]:
             #Remove
