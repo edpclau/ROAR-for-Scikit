@@ -68,7 +68,7 @@ def explain(clf, X_train, X_test, explainer = 'KernelExplainer'):
     return shap_values_df
 
 def rankings(shap_values):
-    rankings = shap_values_df.abs().mean().sort_values(ascending = False)
+    rankings = shap_values.abs().mean().sort_values(ascending = False)
     
     return rankings
 
@@ -247,7 +247,7 @@ def remove(t, rankings, X_train, X_test, type = "top"):
 
 #outputs accuracy, balanced_accuracy, f1_score, and ranks for each iteration.
     
-def roar(clf, t, X_train, y_train, X_test, y_test):
+def roar(clf, t, X_train, y_train, X_test, y_test, explainer = 'KernelExplainer'):
     accu = {}
     bal_accu = {}
     f1 = {}
@@ -257,10 +257,9 @@ def roar(clf, t, X_train, y_train, X_test, y_test):
         #Train
         model = train(clf, X_train, y_train)
         #Explain
-        shap_values = explain(model, X_train, X_test, explainer = 'KernelExplainer')
+        shap_values = explain(model, X_train, X_test, explainer = explainer)
         #Get rankings
         ranks.append(rankings(shap_values))
-        
         #Repeat 3 times removing from top, bottom, and randomly
         for k in ["top", "bottom", "random"]:
             #Remove
@@ -271,18 +270,18 @@ def roar(clf, t, X_train, y_train, X_test, y_test):
 
 
 ## Plot the output of ROAR ##
-def plot_metrics(roar_output):
+def plot_metrics(roar_output, explainer = 'KernelShap'):
     step = roar_output[4]*100
     x_axis_breaks = np.arange(step,100, step)
     
     df = pd.DataFrame(roar_output[0]).mean(axis = 1, level = 1)
     df.index =  x_axis_breaks
-    df.plot(title = f"ROAR with KernelShap (Accuracy)", xlabel = "% of input features removed", ylabel = "Accuracy", figsize = (10,8), grid = True)
+    df.plot(title = f"ROAR with {explainer} (Accuracy)", xlabel = "% of input features removed", ylabel = "Accuracy", figsize = (10,8), grid = True)
     
     df = pd.DataFrame(roar_output[1]).mean(axis = 1, level = 1)
     df.index =  df.index =  x_axis_breaks
-    df.plot(title = f"ROAR with KernelShap (Balanced Accuracy)", xlabel = "% of input features removed", ylabel = "balanced_accuracy", figsize = (10,8), grid = True)
+    df.plot(title = f"ROAR with {explainer} (Balanced Accuracy)", xlabel = "% of input features removed", ylabel = "balanced_accuracy", figsize = (10,8), grid = True)
     
     df = pd.DataFrame(roar_output[2]).mean(axis = 1, level = 1)
     df.index =  x_axis_breaks
-    df.plot(title = f"ROAR with KernelShap (F1_Score)", xlabel = "% of input features removed", ylabel = "f1_score", figsize = (10,8), grid = True)
+    df.plot(title = f"ROAR with {explainer} (F1_Score)", xlabel = "% of input features removed", ylabel = "f1_score", figsize = (10,8), grid = True)
