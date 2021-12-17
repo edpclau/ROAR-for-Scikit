@@ -6,230 +6,202 @@
 
 
 ## Libraries ##
-
 #General
 import copy
 import numpy as np
 import pandas as pd
+
+#Plotting
+import matplotlib as plt
 
 #Evalutation metrics
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 
 #Interpretation
 import shap
-shap.initjs()
+
+
+#Keeping track of time
+from fastprogress.fastprogress import progress_bar
 
 
 
 #### Code ####
 
-## Rankings Function ##
+## Explanation Function ##
 # Trains a model, builds an explanation with KernelShap, and then
-# outputs the ranking of each feature in descending order along with
-# their shap values.
-
+# outputs the ranking of each feature in descending order.
 # Arguments:
-# clf : the model to be trained
-# X_train: Training data as pandas dataframe
-# y_train: Target values for training (This was build using a binary target)
-# X_test:  Test data as pandas dataframe
+# clf : A trained ML model with a .predict method
+# X: Training data as pandas dataframe
+# x:  Test data as pandas dataframe
+# explainer: any explainer that follows the shap api format
+def explain(clf, X, x, explainer = shap.explainers.Permutation):
+    if explainer != shap.explainers.Tree:
+        # #Build Explanation
+        explanation = explainer(clf.predict, X)
+        shap_values = explanation(x)
+    else:
+        # #Build Explanation
+        explanation = explainer(clf, X)
+        shap_values = explanation(x, check_additivity = False)
+    #Get SHAP values for positive class
+    shap_values = shap_values.values[...,1]
+    shap_values = np.abs(shap_values)
+    shap_values = np.mean(shap_values, axis= 0)
+    #Get ranks
+    ranks = np.argsort(shap_values)
+    ranks
+    return ranks
 
-def train(clf, X_train, y_train):
-    #Define model
-    model = copy.deepcopy(clf)
-    
-    #Fit model
-    model.fit(X_train, y_train)
-    
-    return model
 
-
-def explain(clf, X_train, X_test, explainer = 'KernelExplainer'):
-    #Build Explanation
-    if explainer == 'KernelExplainer':
-        explanation = shap.KernelExplainer(clf.predict_proba, shap.kmeans(X_train, 10))
-    
-    elif explainer == 'TreeExplainer':
-        explanation = shap.TreeExplainer(clf)
-
-    elif explainer == 'LinearExplainer':
-        explanation = shap.LinearExplainer(clf, shap.maskers.Independent(X_train, len(X_train)))
-    
-    #Get SHAP values
-    shap_values = explanation.shap_values(X_test)
-    
-    if len(shap_values) == 1:
-        values = shap_values
-    else: 
-        values = shap_values[1]
-
-    shap_values_df = pd.DataFrame(values, columns = X_train.columns)
-    
-    return shap_values_df
-
-def rankings(shap_values):
-    rankings = shap_values.abs().mean().sort_values(ascending = False)
-    
-    return rankings
-
-## Retrain Functions ##
-# Retrains a model iteratively as we 
-# remove the features. It outputs
-#the accuracy, balanced accuracy, and 
-#f1 scores for each model
-
+## Training Function ##
+# Utility function to train the a copy of a model.
 # Arguments:
 # clf: model to be trained
-# X_train: List of dataframes for the training data where features are removed as we iterate through it
-# y_train: Target of the training data
-# X_test: List of dataframes for the test data where features are removed as we iterate through it
-# y_test: Target of the test set. 
+# X: a pandas dataframe containing training data
+# Y: Target of the training data (pd.DataFrame)
 
 #General Retrain function
-def retrain(clf, X_train, y_train, X_test, y_test):
-    accu = []
-    accu_balanced = []
-    f1 = []
+def train(clf, X, Y):
+    accu = np.array([])
+    accu_balanced = np.array([])
+    f1 = np.array([])
     #Iterate through the datasets and retrain for each
-    for i in range(len(X_train)):
-        clf_ret = copy.deepcopy(clf)
+    temp = copy.deepcopy(clf)
+
+    #Fit model
+    temp.fit(X, Y)
+    
+    return temp
+
+
+## Metrics function ##
+# Utility function which outputs a series of metrics to evaluate
+# Currently gets accuracy, balanced_accuracy, and f-score
+
+#Arguments:
+#clf: A trained ML model with a predict method
+#x: a pd.DataFrame of test data
+#y: Target of the test data
+def metrics(clf, x, y):   
+    #Get metrics: 
+    yhat = clf.predict(x)
+
+    accu = accuracy_score(y, yhat)
+    accu_balanced = balanced_accuracy_score(y, yhat)
+    f1 = f1_score(y, yhat)
         
-        #Fit model
-        clf_ret.fit(X_train[i], y_train)
-        
-        #Get metrics: 
-        y_pred = clf_ret.predict(X_test)
-        y_true = y_test
-        
-        accu.append(accuracy_score(y_true, y_pred))
-        accu_balanced.append(balanced_accuracy_score(y_true, y_pred))
-        f1.append(f1_score(y_true, y_pred))
-        
-    return accu, accu_balanced, f1
+    return np.array([[accu], [accu_balanced], [f1]])
 
 
 
 
-## Remove Features ## 
-#These functions create a list of dataframes 
-#where they remove a set percentage of the features.
-#They remove from the top %, bottom %, or random.
+## Mask Features ## 
+#These functions mask data and retrain the ML model
+#They mask from the top %, bottom %, or random.
 
 # Arguments:
-# t: percentage of features to be removed in each iteration
+# t: percentage of features to be masked in each iteration
 # rankings: a list of rankings (descending rankings) to guide the removal
-# X_train, X_test: dataframes of the data from which we will remove the features
+# X, x: dataframes of the data from which we will remove the features. Training set and testing set, respectively
+# Y, y: Targets for the training and testing sets, respectively
+#clf: Model to retrain
+# base: metrics of the full model
 
 
 #Remove top t features
-def remove_top(t, rankings, X_train, X_test):
-    top_t = np.round(len(rankings)*t).astype(int)
-    iters = np.ceil(len(rankings)/top_t).astype(int)
+def remove_top(t, rankings, X, Y, x, y, clf, base):
+    
+    #Make copies of our data to modify
+    X_train = copy.deepcopy(X)
+    x_test = copy.deepcopy(x)
+    results = copy.deepcopy(base)
 
-    high_rankings = copy.deepcopy(rankings)
-    xtr = copy.deepcopy(X_train)
-    xts = copy.deepcopy(X_test)
+    #Set masking schedule
+    j = int(np.round(len(rankings)*t))
+    i = 0
+    k = j
+    
+    #Mask and retrain
+    while k <= len(rankings)+1:
+        #Mask
+        X_train.iloc[:, rankings[i:k]] = X_train.iloc[:, rankings[i:k]].mean()
+        x_test.iloc[:, rankings[i:k]] = x_test.iloc[:, rankings[i:k]].mean() 
+        #Retrain
+        model = train(clf, X_train, Y)
+        results =  np.hstack((results, metrics(model, x_test, y)))
+        
+        #Move iterator forward
+        i += j
+        k += j
 
-
-    X_train_ = {}
-    X_test_ = {}
-    to_remove = []
-    removed = []
-    counter = 0
-    # high_rankings.drop(to_remove)
-
-    for i in range(iters-1):
-        to_remove = np.array(eval(f"high_rankings.iloc[0:{top_t+counter}]").index)
-        counter += top_t
-        to_remove = to_remove[np.isin(to_remove, removed, invert = True)]
-        for col in to_remove:
-            removed.append(col)
-            xtr[col].replace(xtr[col].values, xtr[col].mean(), inplace = True)
-            xts[col].replace(xts[col].values, xts[col].mean(), inplace = True)
-        X_train_[i] = copy.deepcopy(xtr)
-        X_test_[i] = copy.deepcopy(xts)
-
-    return [X_train_, X_test_]
+    return results
 
 
 
 #Remove lowest t features
-def remove_bottom(t, rankings, X_train, X_test):
-    bottom_t = np.round(len(rankings)*t).astype(int)
-    iters = np.ceil(len(rankings)/bottom_t).astype(int)
-
-    bottom_rankings = copy.deepcopy(rankings)
-    xtr = copy.deepcopy(X_train)
-    xts = copy.deepcopy(X_test)
+def remove_bottom(t, rankings, X, Y, x, y, clf, base):
+    #Make copies of our data to modify
+    X_train = copy.deepcopy(X)
+    x_test = copy.deepcopy(x)
+    results = copy.deepcopy(base)
     
-    X_train_ = {}
-    X_test_ = {}
-    to_remove = []
-    removed = []
-    counter = 0
-    # high_rankings.drop(to_remove)
+    
+    #Set masking schedule
+    j = int(np.round(len(rankings)*t))
+    i = len(rankings) - j
+    k = len(rankings)
+    
+    #Mask and retrain
+    while k >= j:
+        #Mask
+        X_train.iloc[:, rankings[i:k]] = X_train.iloc[:, rankings[i:k]].mean()
+        x_test.iloc[:, rankings[i:k]] = x_test.iloc[:, rankings[i:k]].mean() 
+            
+        #Retrain
+        model = train(clf, X_train, Y)
+        results =  np.hstack((results, metrics(model, x_test, y)))
+        
+        
+        #Move iterator forward
+        i -= j
+        k -= j
 
-    for i in range(iters-1):
-        to_remove = np.array(eval(f"bottom_rankings.iloc[-{bottom_t+counter}:-1]").index)
-        counter += bottom_t
-        to_remove = to_remove[np.isin(to_remove, removed, invert = True)]
-        for col in to_remove:
-            removed.append(col)
-            xtr[col].replace(xtr[col].values, xtr[col].mean(), inplace = True)
-            xts[col].replace(xts[col].values, xts[col].mean(), inplace = True)
-        X_train_[i] = copy.deepcopy(xtr)
-        X_test_[i] = copy.deepcopy(xts)
-    return [X_train_, X_test_]
+    return results
 
 
 #Remove t random features
-def remove_random(t, rankings, X_train, X_test): 
-    random_t = np.round(len(rankings)*t).astype(int)
-    iters = np.ceil(len(rankings)/random_t).astype(int)
-    choices = np.random.choice(len(rankings), len(rankings), replace = False)
+def remove_random(t, rankings, X, Y, x, y, clf, base):
+    
+    random_choices = np.random.choice(len(rankings), len(rankings), replace = False)
 
-    random_rankings = copy.deepcopy(rankings)
-    xtr = copy.deepcopy(X_train)
-    xts = copy.deepcopy(X_test)
-
-
-    X_train_ = {}
-    X_test_ = {}
-    to_remove = []
-    removed = []
-    counter = 0
-    # high_rankings.drop(to_remove)
-
-    for i in range(iters-1):
-        to_remove = np.array(random_rankings[choices[0:random_t+counter]].index)
-        counter += random_t
-        to_remove = to_remove[np.isin(to_remove, removed, invert = True)]
-        for col in to_remove:
-            removed.append(col)
-            xtr[col].replace(xtr[col].values, xtr[col].mean(), inplace = True)
-            xts[col].replace(xts[col].values, xts[col].mean(), inplace = True)
-        X_train_[i] = copy.deepcopy(xtr)
-        X_test_[i] = copy.deepcopy(xts)
-    return [X_train_, X_test_]
+    #Make copies of our data to modify
+    X_train = copy.deepcopy(X)
+    x_test = copy.deepcopy(x)
+    results = copy.deepcopy(base)
+    
+    #Set masking schedule
+    j = int(np.round(len(random_choices)*t))
+    i = 0
+    k = j
+    
+    #Mask and retrain
+    while k <= len(random_choices):
+        #Mask
+        X_train.iloc[:, random_choices[i:k]] = X_train.iloc[:, random_choices[i:k]].mean()
+        x_test.iloc[:, random_choices[i:k]] = x_test.iloc[:, random_choices[i:k]].mean() 
+            
+        #Retrain
+        model = train(clf, X_train, Y)
+        results = np.hstack((results, metrics(model, x_test, y)))
 
 
+        #Move iterator forward
+        i += j
+        k += j
 
-## Remove  Wrapper##
-# Wrapper for the "Remove functions" which makes them easier to handle
-
-# Arguments:
-# t: percentage of features to be removed in each iteration
-# rankings: a list of rankings (descending rankings) to guide the removal
-# X_train, X_test: dataframes of the data from which we will remove the features
-# type: which remove function to use "top", "bottom", or "random"
-
-def remove(t, rankings, X_train, X_test, type = "top"):
-    if type == "top":
-        return remove_top(t, rankings, X_train, X_test)
-    elif type == "bottom":
-        return remove_bottom(t, rankings, X_train, X_test)
-    elif type == "random":
-        return remove_random(t, rankings, X_train, X_test)
+    return results
     
     
     
@@ -241,36 +213,38 @@ def remove(t, rankings, X_train, X_test, type = "top"):
 # Arguments:
 # clf : the model to be trained
 # t: percentage of features to be removed in each iteration
-# X_train: Training data as pandas dataframe
-# y_train: Target values for training (This was build using a binary target)
-# X_test:  Test data as pandas dataframe
+# X: Training data as pandas dataframe
+# Y: Target values for training (This was build using a binary target)
+# x:  Test data as pandas dataframe
+# y: Target values for testing
+# explainer: any explainer which built with the shap api
+# repeats: how many times to explain and do the whole retraining
 
-#outputs accuracy, balanced_accuracy, f1_score, and ranks for each iteration.
-    
-def roar(clf, t, X_train, y_train, X_test, y_test, explainer = 'KernelExplainer'):
-    accu = {}
-    bal_accu = {}
-    f1 = {}
-    ranks = []
-    #Repeat 5 times:
-    for i in range(5):
-        #Train
-        model = train(clf, X_train, y_train)
-        #Explain
-        shap_values = explain(model, X_train, X_test, explainer = explainer)
-        #Get rankings
-        ranks.append(rankings(shap_values))
-        #Repeat 3 times removing from top, bottom, and randomly
-        for k in ["top", "bottom", "random"]:
-            #Remove
-            removed = remove(t, ranks[i], X_train, X_test, type = k)
-            #Retrain
-            accu[i,k], bal_accu[i,k], f1[i,k] = retrain(clf, removed[0], y_train, X_test, y_test)
-    return [accu, bal_accu, f1, ranks, t]
+#outputs accuracy, balanced_accuracy, f1_score, and ranks for each iteration.  
+def roar(X, Y, x, y, clf, explainer = shap.explainers.Permutation, t = 0.10, repeats = 10):
+    #Initialize the frames
+    model = train(clf, X, Y)
+    base = metrics(model, x, y)
+    #Initialize
+    ranks = explain(model, X, x, explainer)
+    top = remove_top(t, ranks, X, Y, x, y, clf, base)
+    bottom = remove_bottom(t, ranks, X, Y, x, y, clf, base)
+    random = remove_bottom(t, ranks, X, Y, x, y, clf, base)
+
+    #Set progress bar
+    mb = progress_bar(range(repeats - 1))
+    #Repeat x times
+    for i in mb:
+        ranks = explain(model, X, x, explainer)
+        top = np.dstack(top, remove_top(t, ranks, X, Y, x, y, clf, base))
+        bottom = np.dstack(bottom, remove_bottom(t, ranks, X, Y, x, y, clf, base))
+        random = np.dstack(random, remove_bottom(t, ranks, X, Y, x, y, clf, base))
+    return np.array([top, bottom, random])
 
 
-## Plot the output of ROAR ##
-def plot_metrics(roar_output, explainer = 'KernelShap'):
+## plot the outputs of ROAR ##
+#Plot the decay measured in accuracy
+def plot_curves(results, explainer = 'KernelShap'):
     step = roar_output[4]*100
     x_axis_breaks = np.arange(step,100, step)
     
