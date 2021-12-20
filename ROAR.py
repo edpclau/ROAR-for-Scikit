@@ -2,27 +2,26 @@
 # This is a version of ROAR (as described in Hooker et al 2019) 
 # which works with any scikit-learn model and tabular data (pandas dataframes)
 
-
-
-
 ## Libraries ##
 #General
-import copy
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import copy
 
-#Plotting
-import matplotlib as plt
+#Model Building
+import sklearn
 
-#Evalutation metrics
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
-
-#Interpretation
+#Model Explainer
 import shap
 
+#Model Evalutation
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 
 #Keeping track of time
 from fastprogress.fastprogress import progress_bar
+
+
 
 
 
@@ -56,7 +55,7 @@ def explain(clf, X, x, explainer = shap.explainers.Permutation):
 
 
 ## Training Function ##
-# Utility function to train the a copy of a model.
+# Utility function to train a copy of a model.
 # Arguments:
 # clf: model to be trained
 # X: a pandas dataframe containing training data
@@ -64,9 +63,6 @@ def explain(clf, X, x, explainer = shap.explainers.Permutation):
 
 #General Retrain function
 def train(clf, X, Y):
-    accu = np.array([])
-    accu_balanced = np.array([])
-    f1 = np.array([])
     #Iterate through the datasets and retrain for each
     temp = copy.deepcopy(clf)
 
@@ -111,37 +107,7 @@ def metrics(clf, x, y):
 
 
 #Remove top t features
-def remove_top(t, rankings, X, Y, x, y, clf, base):
-    
-    #Make copies of our data to modify
-    X_train = copy.deepcopy(X)
-    x_test = copy.deepcopy(x)
-    results = copy.deepcopy(base)
-
-    #Set masking schedule
-    j = int(np.round(len(rankings)*t))
-    i = 0
-    k = j
-    
-    #Mask and retrain
-    while k <= len(rankings)+1:
-        #Mask
-        X_train.iloc[:, rankings[i:k]] = X_train.iloc[:, rankings[i:k]].mean()
-        x_test.iloc[:, rankings[i:k]] = x_test.iloc[:, rankings[i:k]].mean() 
-        #Retrain
-        model = train(clf, X_train, Y)
-        results =  np.hstack((results, metrics(model, x_test, y)))
-        
-        #Move iterator forward
-        i += j
-        k += j
-
-    return results
-
-
-
-#Remove lowest t features
-def remove_bottom(t, rankings, X, Y, x, y, clf, base):
+def remove_top(t, rankings, X, Y, x, y, clf, base = np.empty((3,1))):
     #Make copies of our data to modify
     X_train = copy.deepcopy(X)
     x_test = copy.deepcopy(x)
@@ -171,8 +137,38 @@ def remove_bottom(t, rankings, X, Y, x, y, clf, base):
     return results
 
 
+
+
+#Remove lowest t features
+def remove_bottom(t, rankings, X, Y, x, y, clf, base = np.empty((3,1))):
+    
+    #Make copies of our data to modify
+    X_train = copy.deepcopy(X)
+    x_test = copy.deepcopy(x)
+    results = copy.deepcopy(base)
+
+    #Set masking schedule
+    j = int(np.round(len(rankings)*t))
+    i = 0
+    k = j
+    
+    #Mask and retrain
+    while k <= len(rankings)+1:
+        #Mask
+        X_train.iloc[:, rankings[i:k]] = X_train.iloc[:, rankings[i:k]].mean()
+        x_test.iloc[:, rankings[i:k]] = x_test.iloc[:, rankings[i:k]].mean() 
+        #Retrain
+        model = train(clf, X_train, Y)
+        results =  np.hstack((results, metrics(model, x_test, y))) 
+        #Move iterator forward
+        i += j
+        k += j
+
+    return results
+
+##
 #Remove t random features
-def remove_random(t, rankings, X, Y, x, y, clf, base):
+def remove_random(t, rankings, X, Y, x, y, clf, base = np.empty((3,1))):
     
     random_choices = np.random.choice(len(rankings), len(rankings), replace = False)
 
@@ -195,6 +191,7 @@ def remove_random(t, rankings, X, Y, x, y, clf, base):
         #Retrain
         model = train(clf, X_train, Y)
         results = np.hstack((results, metrics(model, x_test, y)))
+       
 
 
         #Move iterator forward
@@ -221,41 +218,70 @@ def remove_random(t, rankings, X, Y, x, y, clf, base):
 # repeats: how many times to explain and do the whole retraining
 
 #outputs accuracy, balanced_accuracy, f1_score, and ranks for each iteration.  
-def roar(X, Y, x, y, clf, explainer = shap.explainers.Permutation, t = 0.10, repeats = 10):
+def roar(X, Y, x, y, clf, explainer = shap.explainers.Permutation, t = 0.10, repeats = 2):
     #Initialize the frames
     model = train(clf, X, Y)
     base = metrics(model, x, y)
     #Initialize
     ranks = explain(model, X, x, explainer)
+     
     top = remove_top(t, ranks, X, Y, x, y, clf, base)
     bottom = remove_bottom(t, ranks, X, Y, x, y, clf, base)
-    random = remove_bottom(t, ranks, X, Y, x, y, clf, base)
+    random = remove_random(t, ranks, X, Y, x, y, clf, base)
 
     #Set progress bar
     mb = progress_bar(range(repeats - 1))
     #Repeat x times
     for i in mb:
         ranks = explain(model, X, x, explainer)
-        top = np.dstack(top, remove_top(t, ranks, X, Y, x, y, clf, base))
-        bottom = np.dstack(bottom, remove_bottom(t, ranks, X, Y, x, y, clf, base))
-        random = np.dstack(random, remove_bottom(t, ranks, X, Y, x, y, clf, base))
+        top = np.dstack((top, remove_top(t, ranks, X, Y, x, y, clf, base)))
+        bottom = np.dstack((bottom, remove_bottom(t, ranks, X, Y, x, y, clf, base)))
+        random = np.dstack((random, remove_random(t, ranks, X, Y, x, y, clf, base)))
     return np.array([top, bottom, random])
 
 
+
+## ROAR Score ##
+#Summarizes the output of ROAR as the difference in area under the curve of bottom - top
+#Arguments:
+#results: output from roar
+#Returns the ROAR score for each metric: accuracy, balanced_accuracy, f1
+def roar_score(results):
+    results_mean = np.mean(results, axis = 3)
+    auc = np.trapz(results_mean)
+    score = np.where((auc[1] - auc[0]) < 0,  (auc[1] - auc[0])/auc[0], (auc[1] - auc[0])/auc[1])
+    return score
+
 ## plot the outputs of ROAR ##
+#ArgumentsL
+#results: the output of ROAR
+#metric: the metric you wish to plot
 #Plot the decay measured in accuracy
-def plot_curves(results, explainer = 'KernelShap'):
-    step = roar_output[4]*100
-    x_axis_breaks = np.arange(step,100, step)
-    
-    df = pd.DataFrame(roar_output[0]).mean(axis = 1, level = 1)
-    df.index =  x_axis_breaks
-    df.plot(title = f"ROAR with {explainer} (Accuracy)", xlabel = "% of input features removed", ylabel = "Accuracy", figsize = (10,8), grid = True)
-    
-    df = pd.DataFrame(roar_output[1]).mean(axis = 1, level = 1)
-    df.index =  df.index =  x_axis_breaks
-    df.plot(title = f"ROAR with {explainer} (Balanced Accuracy)", xlabel = "% of input features removed", ylabel = "balanced_accuracy", figsize = (10,8), grid = True)
-    
-    df = pd.DataFrame(roar_output[2]).mean(axis = 1, level = 1)
-    df.index =  x_axis_breaks
-    df.plot(title = f"ROAR with {explainer} (F1_Score)", xlabel = "% of input features removed", ylabel = "f1_score", figsize = (10,8), grid = True)
+def plot_roar(results, metric = 'Balanced_Accuracy'):
+    metrics = {'Accuracy':0, 'Balanced_Accuracy':1, 'F1-Score':2}
+    i = metrics[metric]
+
+    results_mean = np.mean(results, axis = 3)
+    results_std = np.std(results, axis = 3)
+    plus = results_mean + results_std
+    minus = results_mean - results_std
+
+    a = np.linspace(0, 100, num = len(results_mean[0][0]))
+
+    plt.figure(figsize=(8,5), dpi = 300)
+    plt.plot(a, results_mean[0][i], label = 'Mask Top K')
+    plt.plot(a, results_mean[1][i], label = 'Mask Bottom K')
+    plt.plot(a, results_mean[2][i], label = 'Mask Random K')
+
+    plt.fill_between(a, y1 = plus[0][i], y2 = minus[0][i], alpha = 0.5)
+    plt.fill_between(a, y1 = plus[1][i], y2 = minus[1][i], alpha = 0.5)
+    plt.fill_between(a, y1 = plus[2][i], y2 = minus[2][i], alpha = 0.5)
+
+    plt.fill_between(a, y1 = results_mean[0][i], y2 = results_mean[1][i], label = f'ROAR Score = {np.round(roar_score(results)[i], decimals= 3)}', alpha = 0.1, color= 'purple')
+
+    plt.xlabel('Percentage of Masked Features')
+    plt.ylabel(f'{metric}')
+
+    plt.legend()
+
+    plt.show()
