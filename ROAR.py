@@ -4,16 +4,14 @@
 
 ## Libraries ##
 #General
+from ast import Break
 import numpy as np
-import pandas as pd
+# import pandas as pd
 import matplotlib.pyplot as plt
 import copy
 
-#Model Building
-import sklearn
-
-#Model Explainer
-import shap
+#Model Explanation
+import shap 
 
 #Model Evalutation
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
@@ -44,13 +42,24 @@ def explain(clf, X, x, explainer = shap.explainers.Permutation):
         # #Build Explanation
         explanation = explainer(clf, X)
         shap_values = explanation(x, check_additivity = False)
-    #Get SHAP values for positive class
-    shap_values = shap_values.values[...,1]
-    shap_values = np.abs(shap_values)
-    shap_values = np.mean(shap_values, axis= 0)
+
     #Get ranks
-    ranks = np.argsort(shap_values)
-    ranks
+    ranks = ranker(shap_values)
+    return ranks
+
+
+## Ranking Function ##
+# Outputs the ranking of each feature in descending order.
+# Arguments:
+# shap_values: the output of any shap explainer
+def ranker(shap_values):
+
+    #Get SHAP values for positive class
+    values = shap_values.values[...,1]
+    values = np.abs(values)
+    values = np.mean(values, axis= 0)
+    #Get ranks
+    ranks = np.argsort(values)
     return ranks
 
 
@@ -218,12 +227,19 @@ def remove_random(t, rankings, X, Y, x, y, clf, base = np.empty((3,1))):
 # repeats: how many times to explain and do the whole retraining
 
 #outputs accuracy, balanced_accuracy, f1_score, and ranks for each iteration.  
-def roar(X, Y, x, y, clf, explainer = shap.explainers.Permutation, t = 0.10, repeats = 2):
+def roar(X, Y, x, y, clf, explainer = None, t = 0.10, repeats = 2, shap_values = None):
     #Initialize the frames
     model = train(clf, X, Y)
     base = metrics(model, x, y)
     #Initialize
-    ranks = explain(model, X, x, explainer)
+    if explainer != None:
+        ranks = explain(model, X, x, explainer)
+    elif shap_values != None:
+        ranks = ranker(shap_values)
+    else:
+        print('Must supply either an explainer or shap_values')
+        return
+        
      
     top = remove_top(t, ranks, X, Y, x, y, clf, base)
     bottom = remove_bottom(t, ranks, X, Y, x, y, clf, base)
